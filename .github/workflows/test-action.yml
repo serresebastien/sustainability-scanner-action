@@ -1,0 +1,321 @@
+name: Test AWS Sustainability Scanner Action
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  test-single-file:
+    name: Test with single file
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Create test CloudFormation template
+        run: |
+          mkdir -p test-files
+          cat > test-files/template.yaml << 'EOF'
+          AWSTemplateFormatVersion: '2010-09-09'
+          Description: 'Test CloudFormation template for sustainability scanning'
+          
+          Resources:
+            TestBucket:
+              Type: AWS::S3::Bucket
+              Properties:
+                BucketName: !Sub '${AWS::StackName}-test-bucket'
+                PublicReadPolicy: false
+                
+            TestInstance:
+              Type: AWS::EC2::Instance
+              Properties:
+                ImageId: ami-0abcdef1234567890
+                InstanceType: t3.micro
+                
+            TestDatabase:
+              Type: AWS::RDS::DBInstance
+              Properties:
+                DBInstanceClass: db.t3.micro
+                Engine: mysql
+                AllocatedStorage: 20
+          EOF
+      
+      - name: Test Action with single file
+        id: test-single-file
+        uses: ./
+        with:
+          file: 'test-files/template.yaml'
+      
+      - name: Validate single file output
+        run: |
+          echo "Testing single file scan results..."
+          echo "Results: ${{ steps.test-single-file.outputs.results }}"
+          
+          # Check if results contain expected structure
+          if [[ "${{ steps.test-single-file.outputs.results }}" == *"sustainability_score"* ]]; then
+            echo "✅ Single file test passed - results contain sustainability_score"
+          else
+            echo "❌ Single file test failed - results missing sustainability_score"
+            exit 1
+          fi
+
+  test-directory:
+    name: Test with directory
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Create test directory with multiple files
+        run: |
+          mkdir -p test-directory
+          
+          # Create first CloudFormation template
+          cat > test-directory/stack1.yaml << 'EOF'
+          AWSTemplateFormatVersion: '2010-09-09'
+          Resources:
+            TestBucket1:
+              Type: AWS::S3::Bucket
+              Properties:
+                BucketName: test-bucket-1
+          EOF
+          
+          # Create second CloudFormation template
+          cat > test-directory/stack2.json << 'EOF'
+          {
+            "AWSTemplateFormatVersion": "2010-09-09",
+            "Resources": {
+              "TestBucket2": {
+                "Type": "AWS::S3::Bucket",
+                "Properties": {
+                  "BucketName": "test-bucket-2"
+                }
+              }
+            }
+          }
+          EOF
+          
+          # Create third template
+          cat > test-directory/stack3.yml << 'EOF'
+          AWSTemplateFormatVersion: '2010-09-09'
+          Resources:
+            TestInstance:
+              Type: AWS::EC2::Instance
+              Properties:
+                ImageId: ami-0abcdef1234567890
+                InstanceType: m5.large
+          EOF
+      
+      - name: Test Action with directory
+        id: test-directory
+        uses: ./
+        with:
+          directory: 'test-directory'
+      
+      - name: Validate directory output
+        run: |
+          echo "Testing directory scan results..."
+          echo "Results: ${{ steps.test-directory.outputs.results }}"
+          
+          # Check if results contain expected structure
+          if [[ "${{ steps.test-directory.outputs.results }}" == *"sustainability_score"* ]]; then
+            echo "✅ Directory test passed - results contain sustainability_score"
+          else
+            echo "❌ Directory test failed - results missing sustainability_score"
+            exit 1
+          fi
+
+  test-custom-rules:
+    name: Test with custom rules
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Create test template and custom rules
+        run: |
+          mkdir -p test-custom
+          
+          # Create test template
+          cat > test-custom/template.yaml << 'EOF'
+          AWSTemplateFormatVersion: '2010-09-09'
+          Resources:
+            TestBucket:
+              Type: AWS::S3::Bucket
+              Properties:
+                BucketName: test-bucket-custom
+          EOF
+          
+          # Create custom rules file
+          cat > test-custom/custom-rules.json << 'EOF'
+          {
+            "rules": [
+              {
+                "id": "CUSTOM_RULE_001",
+                "description": "Custom test rule for validation",
+                "severity": "MEDIUM",
+                "resource_types": ["AWS::S3::Bucket"],
+                "conditions": {
+                  "property_exists": "BucketName"
+                }
+              }
+            ]
+          }
+          EOF
+      
+      - name: Test Action with custom rules
+        id: test-custom-rules
+        uses: ./
+        with:
+          file: 'test-custom/template.yaml'
+          rules_file: 'test-custom/custom-rules.json'
+      
+      - name: Validate custom rules output
+        run: |
+          echo "Testing custom rules scan results..."
+          echo "Results: ${{ steps.test-custom-rules.outputs.results }}"
+          
+          # Check if results contain expected structure
+          if [[ "${{ steps.test-custom-rules.outputs.results }}" == *"sustainability_score"* ]]; then
+            echo "✅ Custom rules test passed - results contain sustainability_score"
+          else
+            echo "❌ Custom rules test failed - results missing sustainability_score"
+            exit 1
+          fi
+
+  test-error-handling:
+    name: Test error handling
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Test with non-existent file (should handle gracefully)
+        id: test-error
+        continue-on-error: true
+        uses: ./
+        with:
+          file: 'non-existent-file.yaml'
+      
+      - name: Validate error handling
+        run: |
+          if [[ "${{ steps.test-error.outcome }}" == "failure" ]]; then
+            echo "✅ Error handling test passed - action failed gracefully for non-existent file"
+          else
+            echo "❌ Error handling test failed - action should have failed for non-existent file"
+            exit 1
+          fi
+
+  integration-test:
+    name: Integration test with PR comment
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Create comprehensive test template
+        run: |
+          cat > integration-test.yaml << 'EOF'
+          AWSTemplateFormatVersion: '2010-09-09'
+          Description: 'Comprehensive test template for sustainability scanning'
+          
+          Resources:
+            # S3 Bucket without lifecycle policy (should trigger sustainability rules)
+            TestBucket:
+              Type: AWS::S3::Bucket
+              Properties:
+                BucketName: !Sub '${AWS::StackName}-integration-test'
+                
+            # EC2 Instance with larger instance type (should trigger sustainability rules)
+            TestInstance:
+              Type: AWS::EC2::Instance
+              Properties:
+                ImageId: ami-0abcdef1234567890
+                InstanceType: m5.xlarge
+                
+            # RDS without Multi-AZ (should trigger sustainability rules)
+            TestDatabase:
+              Type: AWS::RDS::DBInstance
+              Properties:
+                DBInstanceClass: db.r5.large
+                Engine: mysql
+                AllocatedStorage: 100
+                MultiAZ: false
+          EOF
+      
+      - name: Run AWS Sustainability Scanner
+        id: scanner
+        uses: ./
+        with:
+          file: 'integration-test.yaml'
+      
+      - name: Create PR comment with results
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const results = ${{ steps.scanner.outputs.results }};
+            const score = results.sustainability_score || 0;
+            const failedRules = results.failed_rules || [];
+            const numberFailedRules = failedRules.length;
+            
+            let body;
+            if (score === 0) {
+              body = `✅ **Integration Test Results**\n\nYour current sustainability score is **${score}**. Sustainability scanner did not find any improvements to apply to your template.`;
+            } else {
+              body = `❌ **Integration Test Results**\n\nYour current sustainability score is **${score}**. Sustainability scanner suggests **${numberFailedRules}** improvements to apply to your template.\n\nCheck out the details here: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
+            }
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+  test-summary:
+    name: Test Summary
+    runs-on: ubuntu-latest
+    needs: [test-single-file, test-directory, test-custom-rules, test-error-handling]
+    if: always()
+    
+    steps:
+      - name: Generate test summary
+        run: |
+          echo "## AWS Sustainability Scanner Action Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ "${{ needs.test-single-file.result }}" == "success" ]]; then
+            echo "✅ Single file test: PASSED" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Single file test: FAILED" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [[ "${{ needs.test-directory.result }}" == "success" ]]; then
+            echo "✅ Directory test: PASSED" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Directory test: FAILED" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [[ "${{ needs.test-custom-rules.result }}" == "success" ]]; then
+            echo "✅ Custom rules test: PASSED" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Custom rules test: FAILED" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [[ "${{ needs.test-error-handling.result }}" == "success" ]]; then
+            echo "✅ Error handling test: PASSED" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Error handling test: FAILED" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "All tests completed. Check individual job results for details." >> $GITHUB_STEP_SUMMARY
